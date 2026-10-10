@@ -30,8 +30,6 @@ from ui.main_window import MainWindow
 from core.process_security import (
     protect_current_process,
     lock_session_file,
-    set_autorun,
-    remove_autorun,
     create_exit_event
 )
 
@@ -60,7 +58,7 @@ def main():
 
     window = MainWindow()
 
-    # Check if this process was launched to resume an active session
+    # Check if this process was launched by Watchdog to revive an active session
     if "--resume-session" in sys.argv:
         try:
             idx = sys.argv.index("--resume-session")
@@ -74,7 +72,6 @@ def main():
                     print(f"[Main] Resuming active session with {remaining} seconds remaining...")
                     protect_current_process(True)
                     window._session_file_handle = lock_session_file(session_file)
-                    set_autorun(session_file)
                     create_exit_event()
 
                     window.is_session_active = True
@@ -105,7 +102,6 @@ def main():
 
                     window.hide()
                 else:
-                    remove_autorun()
                     if os.path.exists(session_file):
                         try:
                             os.remove(session_file)
@@ -116,6 +112,12 @@ def main():
             print(f"[Main] Error resuming session: {e}")
             window.show()
     else:
+        # If started normally without --resume-session, clean any leftover session file
+        if os.path.exists(window.session_file):
+            try:
+                os.remove(window.session_file)
+            except Exception:
+                pass
         window.show()
         window.raise_()
         window.activateWindow()

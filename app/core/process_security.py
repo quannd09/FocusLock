@@ -1,7 +1,6 @@
 import os
 import sys
 import ctypes
-import winreg
 from ctypes import wintypes
 import win32api
 
@@ -19,7 +18,6 @@ DACL_SECURITY_INFORMATION = 4
 SYNCHRONIZE = 0x00100000
 EVENT_MODIFY_STATE = 0x0002
 
-AUTORUN_KEY_NAME = "FocusLockAutoResume"
 EXIT_EVENT_NAME = r"Local\FocusLock_Exit_Event"
 
 
@@ -103,38 +101,6 @@ def unlock_session_file(handle):
             kernel32.CloseHandle(handle)
         except Exception:
             pass
-
-
-def set_autorun(session_file_path):
-    """Registers FocusLock in HKCU Run to resume lockdown across sign-out or reboot."""
-    try:
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        py_exe = sys.executable
-        if "python.exe" in py_exe.lower():
-            w_exe = py_exe.lower().replace("python.exe", "pythonw.exe")
-            if os.path.exists(w_exe):
-                py_exe = w_exe
-
-        main_script = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "main.py"))
-        abs_session = os.path.abspath(session_file_path)
-        cmd = f'"{py_exe}" "{main_script}" --resume-session "{abs_session}"'
-
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as k:
-            winreg.SetValueEx(k, AUTORUN_KEY_NAME, 0, winreg.REG_SZ, cmd)
-        return True
-    except Exception:
-        return False
-
-
-def remove_autorun():
-    """Removes the FocusLock auto-resume entry from HKCU Run."""
-    try:
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as k:
-            winreg.DeleteValue(k, AUTORUN_KEY_NAME)
-        return True
-    except Exception:
-        return False
 
 
 def get_pe_original_filename(exe_path):

@@ -10,8 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.process_security import (
     protect_current_process,
-    is_exit_event_signaled,
-    remove_autorun
+    is_exit_event_signaled
 )
 
 DETACHED_PROCESS = 0x00000008
@@ -51,7 +50,6 @@ def run_watchdog(target_pid, session_file):
         # Check if session expired
         if end_time > 0 and time.time() >= end_time:
             print("[Watchdog] Session duration has ended. Cleaning up.")
-            remove_autorun()
             if session_file and os.path.exists(session_file):
                 try:
                     os.remove(session_file)

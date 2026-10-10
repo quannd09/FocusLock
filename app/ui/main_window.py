@@ -25,8 +25,6 @@ from core.process_security import (
     protect_current_process,
     lock_session_file,
     unlock_session_file,
-    set_autorun,
-    remove_autorun,
     create_exit_event,
     signal_exit_event
 )
@@ -1096,7 +1094,7 @@ class MainWindow(QMainWindow):
             "1. Toàn bộ tab ngoài danh sách sẽ bị đóng ngay.\n"
             "2. Mọi ứng dụng ngoài danh sách sẽ bị FORCE KILL ngay khi mở.\n"
             "3. Ứng dụng này KHÔNG THỂ BỊ TẮT hay hủy bỏ trong suốt thời gian này.\n"
-            "4. Ứng dụng tự động kích hoạt lại ngay cả khi đăng xuất hay khởi động lại máy.\n\n"
+            "4. Cách duy nhất để hủy sớm là đăng xuất hoặc khởi động lại máy tính.\n\n"
             "Bạn đã sẵn sàng bước vào trạng thái Siêu Tập Trung?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
@@ -1128,9 +1126,6 @@ class MainWindow(QMainWindow):
 
         # Lock session file handle to prevent deletion or editing
         self._session_file_handle = lock_session_file(self.session_file)
-
-        # Set auto-resume in registry
-        set_autorun(self.session_file)
 
         # Create Win32 exit event
         create_exit_event()
@@ -1184,9 +1179,6 @@ class MainWindow(QMainWindow):
 
         # Signal clean exit to watchdog
         signal_exit_event()
-
-        # Remove auto-resume from registry
-        remove_autorun()
 
         # Release session file lock
         if self._session_file_handle:
