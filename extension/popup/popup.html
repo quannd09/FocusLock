@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>FocusLock Companion</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 16px;
+      width: 260px;
+      background: #0B0F17;
+      color: #F1F5F9;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .logo {
+      font-size: 18px;
+    }
+    .title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #38BDF8;
+      letter-spacing: -0.2px;
+    }
+    .card {
+      background: #111827;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      border: 1px solid #1F2937;
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      margin-bottom: 6px;
+    }
+    .status-indicator {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .status-connected { background: #10B981; }
+    .status-disconnected { background: #EF4444; }
+    .status-locked { background: #F59E0B; }
+    .hint {
+      font-size: 11px;
+      color: #94A3B8;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="logo">🔒</span>
+    <span class="title">FocusLock Companion</span>
+  </div>
+  <div class="card">
+    <div class="status-row">
+      <span>Kết nối Desktop:</span>
+      <span id="connStatus" style="font-weight: 600;">Đang kiểm tra...</span>
+    </div>
+    <div class="status-row">
+      <span>Chế độ khoá:</span>
+      <span id="lockStatus" style="font-weight: 600;">Chưa kích hoạt</span>
+    </div>
+  </div>
+  <div class="hint">
+    Tiện ích này đồng bộ với FocusLock Desktop App để khoá và đóng các tab ngoài danh sách cho phép.
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

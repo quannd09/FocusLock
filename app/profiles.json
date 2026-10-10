@@ -1,0 +1,50 @@
+[
+  {
+    "name": "💻 Lập trình",
+    "allowed_apps": [
+      "Code.exe",
+      "cursor.exe",
+      "WindowsTerminal.exe",
+      "cmd.exe",
+      "powershell.exe"
+    ],
+    "allowed_urls": [
+      "github.com",
+      "stackoverflow.com",
+      "chatgpt.com",
+      "docs.python.org",
+      "google.com"
+    ],
+    "duration_minutes": 45,
+    "show_floating_widget": true
+  },
+  {
+    "name": "📚 Học tập & Ôn thi",
+    "allowed_apps": [
+      "WINWORD.EXE",
+      "Acrobat.exe",
+      "Notepad.exe",
+      "OneNote.exe"
+    ],
+    "allowed_urls": [
+      "notion.so",
+      "wikipedia.org",
+      "drive.google.com"
+    ],
+    "duration_minutes": 60,
+    "show_floating_widget": true
+  },
+  {
+    "name": "⚡ Pomodoro Siêu Tốc",
+    "allowed_apps": [
+      "Code.exe",
+      "WINWORD.EXE",
+      "EXCEL.EXE"
+    ],
+    "allowed_urls": [
+      "google.com"
+    ],
+    "duration_minutes": 25,
+    "show_floating_widget": false
+  }
+]
