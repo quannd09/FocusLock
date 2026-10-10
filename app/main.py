@@ -3,6 +3,7 @@ import os
 import json
 import time
 import ctypes
+import subprocess
 
 # Force UTF-8 on Windows stdio to prevent UnicodeEncodeError on Vietnamese characters
 os.environ["PYTHONUTF8"] = "1"
@@ -26,6 +27,14 @@ from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtCore import Qt
 
 from ui.main_window import MainWindow
+from core.process_security import (
+    protect_current_process,
+    lock_session_file,
+    set_autorun,
+    remove_autorun,
+    create_exit_event
+)
+
 
 def secure_console():
     """Hides and disables the close button on any attached terminal window."""
@@ -35,11 +44,12 @@ def secure_console():
             # Disable close 'X' button on the console
             hmenu = ctypes.windll.user32.GetSystemMenu(hwnd, False)
             if hmenu:
-                ctypes.windll.user32.EnableMenuItem(hmenu, 0xF060, 0x00000001)  # SC_CLOSE, MF_GRAYED
+                ctypes.windll.user32.EnableMenuItem(hmenu, 0xF060, 0x00000001)
             # Hide the console completely from view
-            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
     except Exception:
         pass
+
 
 def main():
     # Hide any console window immediately
@@ -50,7 +60,7 @@ def main():
 
     window = MainWindow()
 
-    # Check if this process was launched by Watchdog to resume an active session
+    # Check if this process was launched to resume an active session
     if "--resume-session" in sys.argv:
         try:
             idx = sys.argv.index("--resume-session")
@@ -58,17 +68,34 @@ def main():
             if os.path.exists(session_file):
                 with open(session_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                
+
                 remaining = int(data.get("end_time", 0) - time.time())
                 if remaining > 0:
                     print(f"[Main] Resuming active session with {remaining} seconds remaining...")
+                    protect_current_process(True)
+                    window._session_file_handle = lock_session_file(session_file)
+                    set_autorun(session_file)
+                    create_exit_event()
+
                     window.is_session_active = True
                     window.total_seconds = remaining
                     window.remaining_seconds = remaining
                     allowed_apps = data.get("allowed_apps", [])
                     allowed_urls = data.get("allowed_urls", [])
+                    allowed_app_paths = data.get("allowed_app_paths", {})
 
-                    window.guard.start_lockdown(allowed_apps)
+                    # Ensure watchdog is running
+                    watchdog_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "core", "watchdog.py")
+                    DETACHED_PROCESS = 0x00000008
+                    CREATE_NEW_PROCESS_GROUP = 0x00000200
+                    CREATE_NO_WINDOW = 0x08000000
+                    window.watchdog_process = subprocess.Popen(
+                        [sys.executable, watchdog_script, "--target-pid", str(os.getpid()), session_file],
+                        creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+                    )
+                    window.guard.set_watchdog_pid(window.watchdog_process.pid)
+
+                    window.guard.start_lockdown(allowed_apps, allowed_app_paths)
                     window.ws_bridge.start_lock(allowed_urls)
                     window.timer.start(1000)
 
@@ -78,6 +105,12 @@ def main():
 
                     window.hide()
                 else:
+                    remove_autorun()
+                    if os.path.exists(session_file):
+                        try:
+                            os.remove(session_file)
+                        except Exception:
+                            pass
                     window.show()
         except Exception as e:
             print(f"[Main] Error resuming session: {e}")
@@ -107,6 +140,7 @@ def main():
     tray_icon.show()
 
     sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()

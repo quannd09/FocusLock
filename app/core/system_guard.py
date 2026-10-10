@@ -9,6 +9,7 @@ import win32process
 import win32con
 import win32api
 from ctypes import wintypes
+from core.process_security import get_pe_original_filename
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -18,8 +19,7 @@ WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 DEV_TOOLS_PROCESSES = {
     "gcc.exe", "g++.exe", "clang.exe", "clang++.exe", "cc1.exe", "cc1plus.exe",
     "as.exe", "ld.exe", "make.exe", "cmake.exe", "ninja.exe", "gdb.exe", "lldb.exe",
-    "cpptools.exe", "cpptools-srv.exe", "clangd.exe", "git.exe",
-    "cmd.exe", "powershell.exe", "pwsh.exe", "conhost.exe"
+    "cpptools.exe", "cpptools-srv.exe", "clangd.exe", "git.exe", "conhost.exe"
 }
 
 # Windows system, drivers, hardware OSD & background services that must NEVER be killed
@@ -75,6 +75,7 @@ VK_F4 = 0x73
 class SystemGuard:
     def __init__(self, on_unauthorized_app_killed=None, on_show_overlay=None, on_hide_overlay=None):
         self.allowed_apps = set()
+        self.allowed_app_paths = {}
         self.is_locked = False
         self.watchdog_pid = None
         self.own_pid = os.getpid()
@@ -132,6 +133,10 @@ class SystemGuard:
             try:
                 p = psutil.Process(pid.value)
                 pname = p.name()
+                try:
+                    exe_path = p.exe()
+                except Exception:
+                    exe_path = ""
             except Exception:
                 return True
 
@@ -144,7 +149,8 @@ class SystemGuard:
                     'name': pname,
                     'title': title,
                     'pid': pid.value,
-                    'hwnd': hwnd
+                    'hwnd': hwnd,
+                    'path': exe_path
                 }
 
             return True
@@ -168,11 +174,16 @@ class SystemGuard:
                 pname_lower = pname.lower()
                 if pname_lower in ('chrome.exe', 'msedge.exe', 'browser.exe', 'brave.exe', 'firefox.exe', 'code.exe', 'devcpp.exe'):
                     if pname not in results:
+                        try:
+                            exe_path = p.exe()
+                        except Exception:
+                            exe_path = ""
                         results[pname] = {
                             "name": pname,
                             "title": pname.replace(".exe", "").capitalize(),
                             "pid": p.info['pid'],
-                            "hwnd": 0
+                            "hwnd": 0,
+                            "path": exe_path
                         }
         except Exception:
             pass
@@ -198,10 +209,11 @@ class SystemGuard:
             pass
         return False
 
-    def start_lockdown(self, allowed_apps_list):
+    def start_lockdown(self, allowed_apps_list, allowed_app_paths=None):
         """
         Starts the lockdown:
-        - Stores allowed apps (case-insensitive)
+        - Stores allowed apps
+        - Stores and normalizes allowed executable paths
         - Starts background kill-loop and foreground check
         - Installs low-level keyboard hook to block Alt+F4
         """
@@ -209,6 +221,15 @@ class SystemGuard:
         self.allowed_apps = {app.strip().lower() for app in allowed_apps_list if app.strip()}
         self.allowed_apps.add("python.exe")
         self.allowed_apps.add("pythonw.exe")
+
+        self.allowed_app_paths = {}
+        if allowed_app_paths:
+            for name, paths in allowed_app_paths.items():
+                nl = name.strip().lower()
+                if isinstance(paths, (list, set)):
+                    self.allowed_app_paths[nl] = {os.path.abspath(p).lower() for p in paths if p}
+                elif isinstance(paths, str) and paths.strip():
+                    self.allowed_app_paths[nl] = {os.path.abspath(paths.strip()).lower()}
 
         self.is_locked = True
         self._stop_event.clear()
@@ -293,10 +314,35 @@ class SystemGuard:
 
                 # If this visible window belongs to a forbidden app: KILL IT!
                 if name_lower not in self.allowed_apps:
-                    print(f"[SystemGuard] FORBIDDEN APP DETECTED: {name} (PID: {proc_pid}). Killing...")
+                    print(f"[SystemGuard] FORBIDDEN APP DETECTED: {name} PID: {proc_pid}. Killing...")
                     proc.kill()
                     if self.on_unauthorized_app_killed:
                         self.on_unauthorized_app_killed(name)
+                    return True
+
+                # If it matches an allowed app name, verify path and PE metadata to prevent rename spoofing
+                try:
+                    exe_disk_path = proc.exe()
+                except Exception:
+                    exe_disk_path = ""
+
+                if exe_disk_path:
+                    norm_disk_path = os.path.abspath(exe_disk_path).lower()
+                    expected_paths = self.allowed_app_paths.get(name_lower, set())
+                    if expected_paths and norm_disk_path not in expected_paths:
+                        print(f"[SystemGuard] SPOOFED PATH DETECTED for {name}: {norm_disk_path}. Killing...")
+                        proc.kill()
+                        if self.on_unauthorized_app_killed:
+                            self.on_unauthorized_app_killed(name)
+                        return True
+
+                    orig_pe = get_pe_original_filename(exe_disk_path)
+                    if orig_pe and orig_pe != name_lower and orig_pe not in self.allowed_apps:
+                        print(f"[SystemGuard] RENAMED EXECUTABLE SPOOFING DETECTED: {name} is {orig_pe}. Killing...")
+                        proc.kill()
+                        if self.on_unauthorized_app_killed:
+                            self.on_unauthorized_app_killed(name)
+                        return True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
             except Exception as e:
@@ -327,7 +373,22 @@ class SystemGuard:
             proc = psutil.Process(fg_pid)
             fg_name = proc.name().lower()
 
-            if fg_name in self.allowed_apps or fg_name in DEV_TOOLS_PROCESSES or self._is_descendant_of_allowed(proc):
+            is_valid_allowed = False
+            if fg_name in self.allowed_apps:
+                is_valid_allowed = True
+                try:
+                    exe_path = proc.exe()
+                    norm_path = os.path.abspath(exe_path).lower() if exe_path else ""
+                    expected = self.allowed_app_paths.get(fg_name, set())
+                    if expected and norm_path and norm_path not in expected:
+                        is_valid_allowed = False
+                    orig_pe = get_pe_original_filename(exe_path) if exe_path else None
+                    if orig_pe and orig_pe != fg_name and orig_pe not in self.allowed_apps:
+                        is_valid_allowed = False
+                except Exception:
+                    pass
+
+            if (is_valid_allowed or fg_name in DEV_TOOLS_PROCESSES or self._is_descendant_of_allowed(proc)):
                 if self.on_hide_overlay:
                     self.on_hide_overlay()
             elif fg_name not in SYSTEM_PROTECTED_PROCESSES:

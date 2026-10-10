@@ -21,6 +21,15 @@ import urllib.parse
 from core.profile_mgr import ProfileManager
 from core.system_guard import SystemGuard, SYSTEM_PROTECTED_PROCESSES
 from core.ws_server import WebSocketBridge
+from core.process_security import (
+    protect_current_process,
+    lock_session_file,
+    unlock_session_file,
+    set_autorun,
+    remove_autorun,
+    create_exit_event,
+    signal_exit_event
+)
 from ui.floating_timer import FloatingTimerWidget
 from ui.overlay_lock import OverlayLockWindow
 from ui.theme_manager import (
@@ -144,6 +153,8 @@ class MainWindow(QMainWindow):
         self.overlay_window = OverlayLockWindow()
         self.watchdog_process = None
         self.session_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "active_session.json")
+        self._session_file_handle = None
+        self.app_paths = {}
 
         # Session state
         self.is_session_active = False
@@ -613,6 +624,8 @@ class MainWindow(QMainWindow):
         palette = get_theme_palette(self.current_theme)
         for app in running_apps:
             name = app['name']
+            if app.get('path'):
+                self.app_paths[name.lower()] = app['path'].lower()
             raw_title = app.get('title', '').strip()
             title = raw_title if raw_title else name
             subtitle = name if raw_title else "Ứng dụng nền"
@@ -652,6 +665,11 @@ class MainWindow(QMainWindow):
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
                 proc = psutil.Process(pid)
                 exe_name = proc.name()
+                try:
+                    exe_path = proc.exe()
+                    self.app_paths[exe_name.lower()] = exe_path.lower()
+                except Exception:
+                    pass
 
                 if exe_name.lower() not in SYSTEM_PROTECTED_PROCESSES and pid != os.getpid():
                     self.add_or_check_app(exe_name, title)
@@ -672,6 +690,7 @@ class MainWindow(QMainWindow):
         )
         if file_path:
             exe_name = os.path.basename(file_path)
+            self.app_paths[exe_name.lower()] = os.path.abspath(file_path).lower()
             self.add_or_check_app(exe_name, exe_name)
 
     def add_or_check_app(self, exe_name, title=""):
@@ -1077,7 +1096,7 @@ class MainWindow(QMainWindow):
             "1. Toàn bộ tab ngoài danh sách sẽ bị đóng ngay.\n"
             "2. Mọi ứng dụng ngoài danh sách sẽ bị FORCE KILL ngay khi mở.\n"
             "3. Ứng dụng này KHÔNG THỂ BỊ TẮT hay hủy bỏ trong suốt thời gian này.\n"
-            "4. Cách duy nhất để hủy sớm là KHỞI ĐỘNG LẠI HOẶC TẮT MÁY TÍNH.\n\n"
+            "4. Ứng dụng tự động kích hoạt lại ngay cả khi đăng xuất hay khởi động lại máy.\n\n"
             "Bạn đã sẵn sàng bước vào trạng thái Siêu Tập Trung?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
@@ -1090,15 +1109,34 @@ class MainWindow(QMainWindow):
         self.total_seconds = total_minutes * 60
         self.remaining_seconds = self.total_seconds
 
+        allowed_app_paths = {}
+        for app in selected_apps:
+            nl = app.lower()
+            if nl in self.app_paths and self.app_paths[nl]:
+                allowed_app_paths[nl] = self.app_paths[nl]
+
         session_data = {
             "start_time": time.time(),
             "end_time": time.time() + self.total_seconds,
             "allowed_apps": selected_apps,
             "allowed_urls": selected_urls,
+            "allowed_app_paths": allowed_app_paths,
             "show_floating_widget": self.chk_floating_widget.isChecked()
         }
         with open(self.session_file, "w", encoding="utf-8") as f:
             json.dump(session_data, f)
+
+        # Lock session file handle to prevent deletion or editing
+        self._session_file_handle = lock_session_file(self.session_file)
+
+        # Set auto-resume in registry
+        set_autorun(self.session_file)
+
+        # Create Win32 exit event
+        create_exit_event()
+
+        # Protect current process against taskkill
+        protect_current_process(True)
 
         # 1. Start Watchdog process detached from console
         DETACHED_PROCESS = 0x00000008
@@ -1113,7 +1151,7 @@ class MainWindow(QMainWindow):
         self.guard.set_watchdog_pid(self.watchdog_process.pid)
 
         # 2. Start SystemGuard
-        self.guard.start_lockdown(selected_apps)
+        self.guard.start_lockdown(selected_apps, allowed_app_paths)
 
         # 3. Instruct Browser Extension to lock tabs
         self.ws_bridge.start_lock(selected_urls)
@@ -1144,17 +1182,25 @@ class MainWindow(QMainWindow):
         self.guard.stop_lockdown()
         self.ws_bridge.stop_lock()
 
+        # Signal clean exit to watchdog
+        signal_exit_event()
+
+        # Remove auto-resume from registry
+        remove_autorun()
+
+        # Release session file lock
+        if self._session_file_handle:
+            unlock_session_file(self._session_file_handle)
+            self._session_file_handle = None
+
         if os.path.exists(self.session_file):
             try:
                 os.remove(self.session_file)
             except Exception:
                 pass
 
-        if self.watchdog_process:
-            try:
-                self.watchdog_process.terminate()
-            except Exception:
-                pass
+        # Remove process DACL protection
+        protect_current_process(False)
 
         self.floating_widget.hide()
         self.overlay_window.hide()
