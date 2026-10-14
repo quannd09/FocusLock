@@ -1,4 +1,5 @@
-// FocusLock Chrome/Edge Companion Extension - Background Worker
+// FocusLock Chrome/Edge/CocCoc Companion Extension - Background Worker
+// Manifest V3 compliant with local persistence, multi-event interception, and automatic reconnect
 
 let socket = null;
 let isLocked = false;
@@ -6,6 +7,17 @@ let allowedUrls = [];
 let reconnectTimer = null;
 
 const WS_URL = "ws://127.0.0.1:8765";
+
+// Load persisted lock state immediately on service worker boot
+chrome.storage.local.get(["isLocked", "allowedUrls"], (res) => {
+  if (res && res.isLocked) {
+    isLocked = true;
+    allowedUrls = res.allowedUrls || [];
+    console.log("[FocusLock] Restored lock state from storage. Allowed count:", allowedUrls.length);
+    updateBadge();
+    enforceLockOnExistingTabs();
+  }
+});
 
 function getBrowserName() {
   const ua = navigator.userAgent;
@@ -26,7 +38,7 @@ function connectWebSocket() {
 
     socket.onopen = () => {
       const browser = getBrowserName();
-      console.log(`[FocusLock Extension] Connected to Desktop App (${browser})`);
+      console.log("[FocusLock Extension] Connected to Desktop App:", browser);
       sendToDesktop({ type: "HELLO", client: "browser_extension", browser: browser });
       updateBadge();
     };
@@ -46,8 +58,7 @@ function connectWebSocket() {
       updateBadge();
     };
 
-    socket.onerror = (err) => {
-      console.warn("[FocusLock Extension] Socket error. Retrying...");
+    socket.onerror = () => {
       socket.close();
     };
   } catch (e) {
@@ -82,10 +93,10 @@ async function handleServerMessage(data) {
       const tabList = tabs.map(t => ({
         id: t.id,
         title: t.title || "Untitled",
-        url: t.url || "",
+        url: t.url || t.pendingUrl || "",
         favIconUrl: t.favIconUrl || "",
         browser: browser
-      })).filter(t => t.url && !t.url.startsWith("chrome://") && !t.url.startsWith("edge://") && !t.url.startsWith("about:"));
+      })).filter(t => t.url && !t.url.startsWith("chrome://") && !t.url.startsWith("edge://") && !t.url.startsWith("coccoc://") && !t.url.startsWith("about:"));
       sendToDesktop({ type: "TABS_LIST", tabs: tabList, browser: browser });
       break;
     }
@@ -93,7 +104,8 @@ async function handleServerMessage(data) {
     case "LOCK_START": {
       isLocked = true;
       allowedUrls = data.allowedUrls || [];
-      console.log("[FocusLock Extension] Lockdown activated. Whitelist:", allowedUrls);
+      console.log("[FocusLock Extension] Lockdown activated. Whitelist count:", allowedUrls.length);
+      chrome.storage.local.set({ isLocked: true, allowedUrls: allowedUrls });
       await enforceLockOnExistingTabs();
       updateBadge();
       sendToDesktop({ type: "LOCK_ACK", status: "active" });
@@ -104,6 +116,7 @@ async function handleServerMessage(data) {
       isLocked = false;
       allowedUrls = [];
       console.log("[FocusLock Extension] Lockdown ended.");
+      chrome.storage.local.set({ isLocked: false, allowedUrls: [] });
       updateBadge();
       sendToDesktop({ type: "LOCK_STOP_ACK", status: "idle" });
       break;
@@ -111,45 +124,73 @@ async function handleServerMessage(data) {
   }
 }
 
-function normalizeUrl(url) {
+function extractDomain(url) {
   if (!url) return "";
   try {
-    const parsed = new URL(url);
-    return parsed.hostname.toLowerCase();
+    const parsed = new URL(url.startsWith("http") ? url : "https://" + url);
+    let host = (parsed.hostname || "").toLowerCase();
+    if (host.startsWith("www.")) {
+      host = host.slice(4);
+    }
+    return host;
   } catch {
-    return url.toLowerCase();
+    let clean = url.trim().toLowerCase();
+    clean = clean.replace(/^(https?:\/\/)?(www\.)?/, "");
+    return clean.split("/")[0].split("?")[0].split("#")[0];
   }
 }
 
 function isAllowed(url) {
-  if (!url) return true;
-  // Allow system/extension pages
-  if (url.startsWith("chrome-extension://") || url.startsWith("edge-extension://")) {
+  if (!url) return false;
+  const lower = url.trim().toLowerCase();
+
+  // Internal browser and extension schemes
+  if (
+    lower.startsWith("chrome-extension://") ||
+    lower.startsWith("edge-extension://") ||
+    lower.startsWith("devtools://") ||
+    lower === "about:blank" ||
+    lower === "about:newtab" ||
+    lower === "chrome://newtab/" ||
+    lower === "edge://newtab/" ||
+    lower === "coccoc://newtab/" ||
+    lower === "brave://newtab/" ||
+    lower.startsWith("chrome://extensions") ||
+    lower.startsWith("edge://extensions") ||
+    lower.startsWith("coccoc://extensions")
+  ) {
     return true;
   }
-  // If user allows everything (empty whitelist), let it pass
+
+  // If locked with an empty whitelist, block all external URLs
   if (!allowedUrls || allowedUrls.length === 0) {
     return false;
   }
 
-  const host = normalizeUrl(url);
-  const full = url.toLowerCase();
+  const reqHost = extractDomain(lower);
+  if (!reqHost) return false;
 
   for (const item of allowedUrls) {
-    const cleanItem = item.trim().toLowerCase();
-    if (!cleanItem) continue;
+    if (!item) continue;
+    const allowedHost = extractDomain(item);
+    if (!allowedHost) continue;
 
-    // Direct string match
-    if (full.includes(cleanItem)) return true;
-
-    // Domain match
-    const itemHost = normalizeUrl(cleanItem.startsWith("http") ? cleanItem : `https://${cleanItem}`);
-    if (host === itemHost || host.endsWith("." + itemHost)) {
+    // Direct domain match or allowed subdomain
+    if (reqHost === allowedHost || reqHost.endsWith("." + allowedHost)) {
       return true;
     }
   }
 
   return false;
+}
+
+function getSafeFallbackUrl() {
+  if (allowedUrls && allowedUrls.length > 0) {
+    const first = allowedUrls[0].trim();
+    if (first.startsWith("http")) return first;
+    return `https://${first}`;
+  }
+  return "about:blank";
 }
 
 async function enforceLockOnExistingTabs() {
@@ -158,50 +199,82 @@ async function enforceLockOnExistingTabs() {
   let keptAny = false;
 
   for (const tab of tabs) {
-    if (!tab.url) continue;
-    if (isAllowed(tab.url)) {
+    const urlToCheck = tab.pendingUrl || tab.url;
+    if (!urlToCheck) continue;
+    if (isAllowed(urlToCheck)) {
       keptAny = true;
     } else {
-      console.log(`[FocusLock] Closing unauthorized tab: ${tab.url}`);
+      console.log("[FocusLock] Closing unauthorized tab:", urlToCheck);
       try {
         await chrome.tabs.remove(tab.id);
-      } catch (err) {
-        // Tab may have already closed
-      }
+      } catch (_) {}
     }
   }
 
-  // If all tabs were closed, create one safe page to prevent browser from quitting entirely
+  // Prevent browser window from closing entirely if all tabs are removed
   if (!keptAny && tabs.length > 0) {
-    // If there is an allowed URL, open the first allowed URL, otherwise a clean page
-    const target = (allowedUrls.length > 0 && allowedUrls[0].startsWith("http")) 
-      ? allowedUrls[0] 
-      : (allowedUrls.length > 0 ? `https://${allowedUrls[0]}` : "about:blank");
-    chrome.tabs.create({ url: target });
+    chrome.tabs.create({ url: getSafeFallbackUrl() });
   }
 }
 
 // Intercept new tabs
 chrome.tabs.onCreated.addListener((tab) => {
   if (!isLocked) return;
-  if (tab.url && !isAllowed(tab.url)) {
-    console.log(`[FocusLock] Immediately closing new tab with forbidden URL: ${tab.url}`);
+  const targetUrl = tab.pendingUrl || tab.url;
+  if (targetUrl && !isAllowed(targetUrl)) {
+    console.log("[FocusLock] Closing forbidden new tab:", targetUrl);
     chrome.tabs.remove(tab.id);
   }
 });
 
-// Intercept tab updates / navigations
+// Intercept tab updates and navigations
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!isLocked) return;
-  const urlToCheck = changeInfo.url || tab.url;
-  if (urlToCheck) {
-    // Ignore internal transitional states
-    if (urlToCheck === "chrome://newtab/" || urlToCheck === "edge://newtab/" || urlToCheck === "about:blank") {
-      return;
+  const targetUrl = changeInfo.url || tab.pendingUrl || tab.url;
+  if (targetUrl && !isAllowed(targetUrl)) {
+    console.log("[FocusLock] Closing forbidden updated tab:", targetUrl);
+    chrome.tabs.remove(tabId);
+  }
+});
+
+// Intercept pre-navigation events via webNavigation before request loads
+chrome.webNavigation?.onBeforeNavigate?.addListener(async (details) => {
+  if (!isLocked) return;
+  if (details.frameId === 0) {
+    const url = details.url;
+    if (url && !isAllowed(url)) {
+      console.log("[FocusLock] WebNavigation blocked unauthorized URL:", url);
+      try {
+        await chrome.tabs.remove(details.tabId);
+      } catch (_) {}
     }
-    if (!isAllowed(urlToCheck)) {
-      console.log(`[FocusLock] Closed tab navigating to forbidden URL: ${urlToCheck}`);
-      chrome.tabs.remove(tabId);
+  }
+});
+
+// Intercept committed navigations
+chrome.webNavigation?.onCommitted?.addListener(async (details) => {
+  if (!isLocked) return;
+  if (details.frameId === 0) {
+    const url = details.url;
+    if (url && !isAllowed(url)) {
+      console.log("[FocusLock] Closing committed unauthorized URL:", url);
+      try {
+        await chrome.tabs.remove(details.tabId);
+      } catch (_) {}
+    }
+  }
+});
+
+// Intercept Single Page Application history transitions
+chrome.webNavigation?.onHistoryStateUpdated?.addListener(async (details) => {
+  if (!isLocked) return;
+  if (details.frameId === 0) {
+    const url = details.url;
+    if (url && !isAllowed(url)) {
+      console.log("[FocusLock] Closing unauthorized SPA transition:", url);
+      try {
+        await chrome.tabs.remove(details.tabId);
+      } catch (_) {}
     }
   }
 });
@@ -222,8 +295,11 @@ function updateBadge() {
 // Initial connection
 connectWebSocket();
 
-// Keep service worker alive
+// Periodic alarm to keep service worker alive and re-enforce lock
 chrome.alarms?.create("heartbeat", { periodInMinutes: 0.5 });
 chrome.alarms?.onAlarm.addListener(() => {
   connectWebSocket();
+  if (isLocked) {
+    enforceLockOnExistingTabs();
+  }
 });

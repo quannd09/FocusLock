@@ -66,6 +66,8 @@ class WebSocketBridge:
         self.loop = None
         self.thread = None
         self.is_running = False
+        self.is_locked = False
+        self.allowed_urls = []
 
     def start(self):
         if self.is_running:
@@ -130,8 +132,13 @@ class WebSocketBridge:
             print(f"[WebSocketBridge] Port detection note: {e}")
 
         self.client_info[websocket] = {"browser": browser_name}
-        print(f"[WebSocketBridge] Client connected ({browser_name}). Total: {len(self.clients)}")
+        print(f"[WebSocketBridge] Client connected: {browser_name}. Total: {len(self.clients)}")
         self._notify_clients_changed()
+
+        # Immediately sync active lockdown state to the connected client
+        if self.is_locked and self.loop:
+            sync_payload = json.dumps({"type": "LOCK_START", "allowedUrls": self.allowed_urls})
+            asyncio.run_coroutine_threadsafe(websocket.send(sync_payload), self.loop)
 
         try:
             async for message in websocket:
@@ -179,14 +186,21 @@ class WebSocketBridge:
         elif msg_type == "HELLO":
             client_browser = self.client_info.get(websocket, {}).get("browser", "Browser")
             print(f"[WebSocketBridge] Extension greeting received from {client_browser}.")
+            if self.is_locked and self.loop:
+                sync_payload = json.dumps({"type": "LOCK_START", "allowedUrls": self.allowed_urls})
+                asyncio.run_coroutine_threadsafe(websocket.send(sync_payload), self.loop)
 
     def request_tabs(self):
         self._broadcast({"type": "GET_TABS"})
 
     def start_lock(self, allowed_urls):
-        self._broadcast({"type": "LOCK_START", "allowedUrls": allowed_urls})
+        self.is_locked = True
+        self.allowed_urls = list(allowed_urls)
+        self._broadcast({"type": "LOCK_START", "allowedUrls": self.allowed_urls})
 
     def stop_lock(self):
+        self.is_locked = False
+        self.allowed_urls = []
         self._broadcast({"type": "LOCK_STOP"})
 
     def _broadcast(self, msg):
