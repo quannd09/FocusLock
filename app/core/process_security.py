@@ -20,6 +20,62 @@ EVENT_MODIFY_STATE = 0x0002
 
 EXIT_EVENT_NAME = r"Local\FocusLock_Exit_Event"
 
+TH32CS_SNAPPROCESS = 0x00000002
+PROCESS_TERMINATE = 0x0001
+
+
+class PROCESSENTRY32(ctypes.Structure):
+    _fields_ = [
+        ('dwSize', wintypes.DWORD),
+        ('cntUsage', wintypes.DWORD),
+        ('th32ProcessID', wintypes.DWORD),
+        ('th32DefaultHeapID', ctypes.c_size_t),
+        ('th32ModuleID', wintypes.DWORD),
+        ('cntThreads', wintypes.DWORD),
+        ('th32ParentProcessID', wintypes.DWORD),
+        ('pcPriClassBase', ctypes.c_long),
+        ('dwFlags', wintypes.DWORD),
+        ('szExeFile', ctypes.c_char * 260)
+    ]
+
+
+BANNED_PROCESS_NAMES = {
+    "taskkill.exe",
+    "taskmgr.exe",
+    "processhacker.exe",
+    "procexp.exe",
+    "procexp64.exe",
+    "procmon.exe",
+    "procmon64.exe",
+    "wmic.exe"
+}
+
+
+def kill_banned_processes():
+    """
+    High-speed Win32 scan that immediately detects and kills any process
+    matching BANNED_PROCESS_NAMES such as taskkill.exe and taskmgr.exe.
+    """
+    killed = []
+    h_snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if h_snap != -1:
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        if kernel32.Process32First(h_snap, ctypes.byref(entry)):
+            while True:
+                exe_name = entry.szExeFile.decode('utf-8', errors='ignore').lower()
+                if exe_name in BANNED_PROCESS_NAMES:
+                    pid = entry.th32ProcessID
+                    h_proc = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+                    if h_proc:
+                        kernel32.TerminateProcess(h_proc, 1)
+                        kernel32.CloseHandle(h_proc)
+                        killed.append((exe_name, pid))
+                if not kernel32.Process32Next(h_snap, ctypes.byref(entry)):
+                    break
+        kernel32.CloseHandle(h_snap)
+    return killed
+
 
 def protect_current_process(enable=True):
     """

@@ -9,7 +9,7 @@ import win32process
 import win32con
 import win32api
 from ctypes import wintypes
-from core.process_security import get_pe_original_filename
+from core.process_security import get_pe_original_filename, kill_banned_processes
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -84,6 +84,7 @@ class SystemGuard:
         self.on_hide_overlay = on_hide_overlay
 
         self._guard_thread = None
+        self._sentinel_thread = None
         self._hook_thread = None
         self._hook_id = None
         self._stop_event = threading.Event()
@@ -237,10 +238,26 @@ class SystemGuard:
         self._guard_thread = threading.Thread(target=self._enforcement_loop, daemon=True)
         self._guard_thread.start()
 
+        self._sentinel_thread = threading.Thread(target=self._banned_process_loop, daemon=True)
+        self._sentinel_thread.start()
+
         self._hook_thread = threading.Thread(target=self._keyboard_hook_worker, daemon=True)
         self._hook_thread.start()
 
         print(f"[SystemGuard] Lockdown activated! Allowed apps: {self.allowed_apps}")
+
+    def _banned_process_loop(self):
+        """
+        Runs every 40ms to instantly terminate any banned utility like taskkill.exe or taskmgr.exe.
+        """
+        while not self._stop_event.is_set():
+            try:
+                killed = kill_banned_processes()
+                for name, pid in killed:
+                    print(f"[SystemGuard] BANNED PROCESS TERMINATED: {name} PID: {pid}")
+            except Exception:
+                pass
+            time.sleep(0.04)
 
     def stop_lockdown(self):
         """Stops lockdown and releases hooks."""

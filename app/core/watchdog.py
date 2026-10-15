@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.process_security import (
     protect_current_process,
-    is_exit_event_signaled
+    is_exit_event_signaled,
+    kill_banned_processes
 )
 
 DETACHED_PROCESS = 0x00000008
@@ -82,7 +83,13 @@ def run_watchdog(target_pid, session_file):
             else:
                 break
 
-        time.sleep(1)
+        # Terminate any rogue process killer like taskkill.exe or taskmgr.exe immediately
+        try:
+            kill_banned_processes()
+        except Exception:
+            pass
+
+        time.sleep(0.4)
 
     protect_current_process(False)
 
